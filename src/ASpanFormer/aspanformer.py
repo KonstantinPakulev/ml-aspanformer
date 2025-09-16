@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
+
 from torchvision import transforms
 from einops.einops import rearrange
+from kornia.geometry import resize
 
 from .backbone import build_backbone
 from .utils.position_encoding import PositionEncodingSine
@@ -76,9 +78,10 @@ class ASpanFormer(nn.Module):
             ds0,ds1=[4,4],[4,4]
 
         mask_c0 = mask_c1 = None  # mask is useful in training
-        if 'mask0' in data:
-            mask_c0, mask_c1 = data['mask0'].flatten(
-                -2), data['mask1'].flatten(-2)
+        if "mask0" in data:
+            mask_c0 = resize(data["mask0"], data["hw0_c"], interpolation="nearest").flatten(-2)
+        if "mask1" in data:
+            mask_c1 = resize(data["mask1"], data["hw1_c"], interpolation="nearest").flatten(-2)
         feat_c0, feat_c1, flow_list = self.loftr_coarse(
             feat_c0, feat_c1,pos_encoding0,pos_encoding1,mask_c0,mask_c1,ds0,ds1)
 
