@@ -5,6 +5,7 @@ import h5py
 import torch
 from numpy.linalg import inv
 import re
+from loguru import logger
 
 
 try:
@@ -48,6 +49,12 @@ def imread_gray(path, augment_fn=None, client=SCANNET_CLIENT):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = augment_fn(image)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # Check if image was loaded successfully (Lightning 2.x compatibility)
+    if image is None:
+        logger.warning(f"Failed to load image: {path}")
+        raise ValueError(f"Could not read image: {path}")
+
     return image  # (h, w)
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import numpy as np
 import pytorch_lightning as pl
+import os
 from matplotlib import pyplot as plt
 
 from src.ASpanFormer.aspanformer import ASpanFormer
@@ -25,7 +26,8 @@ from src.utils.profiler import PassThroughProfiler
 
 
 class PL_ASpanFormer(pl.LightningModule):
-    def __init__(self, config, pretrained_ckpt=None, profiler=None, dump_dir=None):
+    def __init__(self, config, pretrained_ckpt=None, profiler=None, dump_dir=None, max_pairs=None,
+                 dump_inputs_dir=None):
         """
         TODO:
             - use the new version of PL logging API.
@@ -50,9 +52,15 @@ class PL_ASpanFormer(pl.LightningModule):
             msg=self.matcher.load_state_dict(state_dict, strict=False)
             print(msg)
             logger.info(f"Load \'{pretrained_ckpt}\' as pretrained checkpoint")
-        
+
         # Testing
         self.dump_dir = dump_dir
+        self.dump_inputs_dir = dump_inputs_dir
+        self.max_pairs = max_pairs
+        self._pairs_processed = 0
+
+        # Lightning 2.x: Store test outputs as instance attributes for on_test_epoch_end
+        self.test_step_outputs = []
         
     def configure_optimizers(self):
         # FIXME: The scheduler did not work properly when `--resume_from_checkpoint`
@@ -157,13 +165,11 @@ class PL_ASpanFormer(pl.LightningModule):
                 
         return {'loss': batch['loss']}
 
-    def training_epoch_end(self, outputs):
-        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
-        if self.trainer.global_rank == 0:
-            self.logger.experiment.add_scalar(
-                'train/avg_loss_on_epoch', avg_loss,
-                global_step=self.current_epoch)
-    
+    def on_train_epoch_end(self):
+        # Lightning 2.x: training_epoch_end is deprecated
+        # The avg_loss is now logged directly in training_step using self.log()
+        pass
+
     def validation_step(self, batch, batch_idx):
         self._trainval_inference(batch)
          
@@ -183,7 +189,8 @@ class PL_ASpanFormer(pl.LightningModule):
         }
         
     def validation_epoch_end(self, outputs):
-        # handle multiple validation sets
+        # Lightning 2.x: validation_epoch_end still works with deprecation warning
+        # (requires outputs parameter which is removed in on_validation_epoch_end)
         multi_outputs = [outputs] if not isinstance(outputs[0], (list, tuple)) else outputs
         multi_val_metrics = defaultdict(list)
         
@@ -230,6 +237,31 @@ class PL_ASpanFormer(pl.LightningModule):
             self.log(f'auc@{thr}', torch.tensor(np.mean(multi_val_metrics[f'auc@{thr}'])))  # ckpt monitors on this
 
     def test_step(self, batch, batch_idx):
+        if self.max_pairs is not None and self._pairs_processed >= self.max_pairs:
+            return {}
+
+        if self.dump_inputs_dir is not None:
+            os.makedirs(self.dump_inputs_dir, exist_ok=True)
+            pair_names = list(zip(*batch['pair_names']))
+            bs = batch['image0'].shape[0]
+            for b_id in range(bs):
+                rel1, rel2 = pair_names[b_id]
+                p1, p2 = Path(rel1), Path(rel2)
+                scene = p1.parts[-3]  # works for MegaDepth ('0015') and ScanNet ('scene0000_00')
+                stem = f"{scene}_{p1.stem}_{p2.stem}"
+                bundle = {
+                    'image0': batch['image0'][b_id].cpu(),
+                    'image1': batch['image1'][b_id].cpu(),
+                    'identifier': '#'.join(pair_names[b_id]),
+                }
+                if 'mask0' in batch:
+                    bundle['mask0'] = batch['mask0'][b_id].cpu()
+                    bundle['mask1'] = batch['mask1'][b_id].cpu()
+                if 'scale0' in batch:
+                    bundle['scale0'] = batch['scale0'][b_id].cpu()
+                    bundle['scale1'] = batch['scale1'][b_id].cpu()
+                torch.save(bundle, os.path.join(self.dump_inputs_dir, f"{stem}.pt"))
+
         with self.profiler.profile("LoFTR"):
             self.matcher(batch)
 
@@ -254,9 +286,17 @@ class PL_ASpanFormer(pl.LightningModule):
                     dumps.append(item)
                 ret_dict['dumps'] = dumps
 
+        self._pairs_processed += batch['image0'].shape[0]
+
+        # Lightning 2.x: Store outputs for on_test_epoch_end
+        self.test_step_outputs.append(ret_dict)
+
         return ret_dict
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
+        # Lightning 2.x: Use stored outputs from test_step instead of parameter
+        # Filter out empty dicts from early-exit steps (max_pairs)
+        outputs = [o for o in self.test_step_outputs if 'metrics' in o]
         # metrics: dict of list, numpy
         _metrics = [o['metrics'] for o in outputs]
         metrics = {k: flattenList(gather(flattenList([_me[k] for _me in _metrics]))) for k in _metrics[0]}
@@ -274,3 +314,6 @@ class PL_ASpanFormer(pl.LightningModule):
             logger.info('\n' + pprint.pformat(val_metrics_4tb))
             if self.dump_dir is not None:
                 np.save(Path(self.dump_dir) / 'LoFTR_pred_eval', dumps)
+
+        # Clear stored outputs for next test run
+        self.test_step_outputs.clear()

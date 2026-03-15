@@ -1,5 +1,10 @@
 import torch
-from pytorch_lightning.profiler import SimpleProfiler, PassThroughProfiler
+# Lightning 2.x: profilers moved to pytorch_lightning.profilers
+try:
+    from pytorch_lightning.profilers import SimpleProfiler, PassThroughProfiler
+except ImportError:
+    # Fallback to Lightning 1.x for compatibility
+    from pytorch_lightning.profiler import SimpleProfiler, PassThroughProfiler
 from contextlib import contextmanager
 from pytorch_lightning.utilities import rank_zero_only
 
@@ -31,8 +36,14 @@ def build_profiler(name):
     if name == 'inference':
         return InferenceProfiler()
     elif name == 'pytorch':
-        from pytorch_lightning.profiler import PyTorchProfiler
-        return PyTorchProfiler(use_cuda=True, profile_memory=True, row_limit=100)
+        # Lightning 2.x: profilers moved to pytorch_lightning.profilers
+        try:
+            from pytorch_lightning.profilers import PyTorchProfiler
+            return PyTorchProfiler(use_cuda=True, profile_memory=True, row_limit=100)
+        except ImportError:
+            # Fallback to Lightning 1.x for compatibility
+            from pytorch_lightning.profiler import PyTorchProfiler
+            return PyTorchProfiler(use_cuda=True, profile_memory=True, row_limit=100)
     elif name is None:
         return PassThroughProfiler()
     else:

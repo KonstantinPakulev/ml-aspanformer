@@ -12,7 +12,7 @@ import torch
 
 def parse_args():
     # init a costum parser which will be added into pl.Trainer parser
-    # check documentation: https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-flags
+    # Lightning 2.x: add_argparse_args is deprecated, manually add common Trainer flags
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         'data_cfg_path', type=str, help='data config path')
@@ -23,6 +23,9 @@ def parse_args():
     parser.add_argument(
         '--dump_dir', type=str, default=None, help="if set, the matching results will be dump to dump_dir")
     parser.add_argument(
+        '--dump_inputs_dir', type=str, default=None,
+        help="if set, model inputs (image0/1, mask0/1) are saved as .pt files before the forward pass")
+    parser.add_argument(
         '--profiler_name', type=str, default=None, help='options: [inference, pytorch], or leave it unset')
     parser.add_argument(
         '--batch_size', type=int, default=1, help='batch_size per gpu')
@@ -32,7 +35,13 @@ def parse_args():
         '--thr', type=float, default=None, help='modify the coarse-level matching threshold.')
     parser.add_argument(
         '--mode', type=str, default='vanilla', help='modify the coarse-level matching threshold.')
-    parser = pl.Trainer.add_argparse_args(parser)
+    parser.add_argument(
+        '--max_pairs', type=int, default=None, help='stop after this many pairs (for debugging)')
+    # Common Trainer flags for Lightning 2.x
+    parser.add_argument('--gpus', type=str, default='-1', help='gpus to use, -1 for all')
+    parser.add_argument('--benchmark', action='store_true', help='enable cuDNN benchmarking')
+    # Lightning 2.x: add_argparse_args is deprecated, manually add common flags
+    # parser = pl.Trainer.add_argparse_args(parser)
     return parser.parse_args()
 
 
@@ -45,7 +54,12 @@ if __name__ == '__main__':
     config = get_cfg_defaults()
     config.merge_from_file(args.main_cfg_path)
     config.merge_from_file(args.data_cfg_path)
-    pl.seed_everything(config.TRAINER.SEED)  # reproducibility
+    # Lightning 2.x: seed_everything is deprecated, use seed_everything from pl.utilities
+    try:
+        pl.seed_everything(config.TRAINER.SEED, workers=True)  # reproducibility
+    except TypeError:
+        # Fallback for older Lightning versions
+        pl.seed_everything(config.TRAINER.SEED)  # reproducibility
 
     # tune when testing
     if args.thr is not None:
@@ -55,7 +69,8 @@ if __name__ == '__main__':
 
     # lightning module
     profiler = build_profiler(args.profiler_name)
-    model = PL_ASpanFormer(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir)
+    model = PL_ASpanFormer(config, pretrained_ckpt=args.ckpt_path, profiler=profiler, dump_dir=args.dump_dir,
+                           max_pairs=args.max_pairs, dump_inputs_dir=args.dump_inputs_dir)
     loguru_logger.info(f"ASpanFormer-lightning initialized!")
 
     # lightning data
@@ -63,7 +78,21 @@ if __name__ == '__main__':
     loguru_logger.info(f"DataModule initialized!")
 
     # lightning trainer
-    trainer = pl.Trainer.from_argparse_args(args, replace_sampler_ddp=False, logger=False)
+    # Lightning 2.x: from_argparse_args is deprecated, manually create Trainer
+    accelerator = 'gpu' if torch.cuda.is_available() else 'cpu'
+    gpus = args.gpus if args.gpus != '-1' else -1
+    if gpus == -1:
+        devices = 'auto'
+    else:
+        devices = [int(x) for x in gpus.split(',')]
+
+    trainer = pl.Trainer(
+        accelerator=accelerator,
+        devices=devices,
+        benchmark=args.benchmark,
+        logger=False
+    )
 
     loguru_logger.info(f"Start testing!")
-    trainer.test(model, datamodule=data_module, verbose=False)
+    # Lightning 2.x: verbose parameter removed from test()
+    trainer.test(model, datamodule=data_module)

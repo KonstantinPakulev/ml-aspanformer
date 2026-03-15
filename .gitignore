@@ -6,6 +6,8 @@ __pycache__/
 *.pth
 tmp.*
 */.ipynb_checkpoints/*
+.conda/
+.venv/
 
 logs/
 dump/
@@ -16,6 +18,8 @@ demo/utils.py
 
 demo/*.jpg
 demo/*.png
+
+weights/
 
 notebooks/QccDayNight.ipynb
 notebooks/westlake.ipynb
